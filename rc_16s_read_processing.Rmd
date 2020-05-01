@@ -1,0 +1,158 @@
+---
+title: "rc_16s_read_processing"
+author: "Reilly Cooper"
+date: "3/5/2019"
+output: html_document
+---
+
+```{r setup, echo = F}
+library(dada2)
+library(phyloseq)
+library(vegan)
+library(tidyverse)
+```
+
+```{r input}
+path <- "/Users/work/Desktop/rc_16S_paper/rc_exp_16s/"
+fnFs <- sort(list.files(path, pattern="R1_001.fastq.gz", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="R2_001.fastq.gz", full.names = TRUE))
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, trimLeft = c(17, 21), maxN = 0, maxEE = c(2,2), truncQ = 2, rm.phix = TRUE, compress = TRUE, multithread = TRUE)
+```
+
+
+Learning read error rates and dereplicating shared sequences, then inferring ASVs from samples.
+```{r learning}
+errF <- learnErrors(filtFs, multithread = TRUE)
+errR <- learnErrors(filtRs, multithread = TRUE)
+
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+
+dadaFs <- dada(derepFs, err = errF, multithread = TRUE)
+dadaRs <- dada(derepRs, err = errR, multithread = TRUE)
+```
+
+Merging reads - aligning inferred forward and reverse reads. Constructing ASV table (seqtab), and removing chimeric reads (seqtab.nochim). Then assigning taxonomy.
+```{r asv}
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose = TRUE)
+seqtab <- makeSequenceTable(mergers)
+seqtab.nochim <- removeBimeraDenovo(seqtab, method = "consensus", multithread = TRUE, verbose = TRUE)
+
+taxa <- assignTaxonomy(seqtab.nochim, "/Users/work/Desktop/RefSeq-RDP16S_v2_May2018.fa.gz", multithread=TRUE)
+```
+
+
+Making phylogenetic tree.
+```{r taxa}
+seqs <- getSequences(seqtab.nochim)
+names(seqs) <- seqs
+alignment <- AlignSeqs(DNAStringSet(seqs), anchor = NA, verbose = F)
+
+phangAlign <- phyDat(as(alignment, "matrix"), type="DNA")
+dm <- dist.ml(phangAlign)
+treeNJ <- NJ(dm) # Note, tip order != sequence order
+fit = pml(treeNJ, data=phangAlign)
+fitGTR <- update(fit, k=4, inv=0.2)
+fitGTR <- optim.pml(fitGTR, model="GTR", optInv=TRUE, optGamma=TRUE,
+        rearrangement = "stochastic", control = pml.control(trace = 0))
+```
+
+Loading sample metadata, then creating phyloseq object and rarefying.
+```{r}
+samples.out <- data.frame(Sample = rownames(seqtab.nochim))
+sample.info <- read.csv('/Users/work/Desktop/rc_exp_16s/rc_sample_metadata.csv')
+rownames(sample.info)<-sample.info$Sample
+
+rc <- phyloseq(tax_table(taxa),
+ sample_data(sample.info),
+ otu_table(seqtab.nochim, taxa_are_rows = FALSE),
+ phy_tree(fitGTR$tree))
+
+saveRDS(rc, "rc.rds")
+rc <- readRDS("rc.rds")   
+
+# sample.info had "CONTROL" instead of "CHLAMY" for some food treatments, so I had to go in and change that. Therefore, I had to split apart the phyloseq object and add in the new data - I didn't want to run the whole tree again
+tree = phy_tree(rc)
+tax = tax_table(rc)
+otu = otu_table(rc)
+sam = sample_data(rc)
+sam2 = sample.info
+
+rc <- phyloseq(otu_table(otu),
+               tax_table(tax),
+               phy_tree(tree), 
+               sample_data(sam2))
+
+saveRDS(rc, "rc.rds")
+rc <- readRDS("rc.rds")  
+```
+
+Filtering based on prevalence.
+```{r}
+# Filter out samples with no reads
+rc.pruned = subset_samples(rc, Sample != "E0T17S2")
+rc.pruned = subset_samples(rc.pruned, Sample != "E0T17S3")
+rc.pruned = subset_samples(rc.pruned, Sample != "E1T10S2")
+rc.pruned = subset_samples(rc.pruned, Sample != "E1T10S3")
+rc.pruned = subset_samples(rc.pruned, Sample != "E1T10S4")
+rc.pruned = subset_samples(rc.pruned, Sample != "E1T11S1")
+rc.pruned = subset_samples(rc.pruned, Sample != "E1T11S2")
+rc.pruned = subset_samples(rc.pruned, Sample != "E1T11S4")
+rc.pruned = subset_samples(rc.pruned, Sample != "E1T11S5")
+rc.pruned = subset_samples(rc.pruned, Sample != "E2T15S1")
+rc.pruned = subset_samples(rc.pruned, Sample != "E2T15S3")
+
+
+prev0 = apply(X = otu_table(rc.pruned),
+ MARGIN = ifelse(taxa_are_rows(rc.pruned), yes = 1, no = 2),
+ FUN = function(x){sum(x > 0)})
+prevdf = data.frame(Prevalence = prev0,
+ TotalAbundance = taxa_sums(rc.pruned),
+ tax_table(rc.pruned))
+keepPhyla = table(prevdf$Phylum)[(table(prevdf$Phylum) > 5)]
+prevdf1 = subset(prevdf, Phylum %in% names(keepPhyla))
+# Define prevalence threshold as 25% of total samples
+prevalenceThreshold = 0.25 * nsamples(rc.pruned)
+prevalenceThreshold
+
+# Execute prevalence filter, using `prune_taxa()` function
+rc.clean = prune_taxa((prev0 > prevalenceThreshold), rc.pruned)
+rc.clean = subset_taxa(rc.clean, (Phylum != "Cyanobacteria/Chloroplast") | is.na(Class)) %>% subset_samples(experiment != "negative_chlamydomonas") %>% 
+  subset_samples(experiment != "negative_kit") %>% subset_samples(experiment != "negative_culture") %>% subset_samples(experiment != "one")
+
+
+saveRDS(rc.clean, "rcClean.rds")
+rc.clean <- readRDS("rcClean.rds")
+
+
+```
+
+Extracting FASTA, count table, taxonomy table.
+```{r}
+rc_asv_seqs <- colnames(seqtab.nochim)
+rc_asv_headers <- vector(dim(seqtab.nochim)[2], mode = "character")
+for (i in 1:dim(seqtab.nochim)[2]) {
+  rc_asv_headers[i] <- paste(">ASV", i, sep="_")
+}
+
+rc_asv_fasta <- c(rbind(rc_asv_headers, rc_asv_seqs))
+write(rc_asv_fasta, "RC_ASVs.fa")
+
+rc_asv_tab <- t(seqtab.nochim)
+row.names(rc_asv_tab) <- sub(">", "", rc_asv_headers)
+rc_asv_biom <- make_biom(rc_asv_tab)
+write_biom(rc_asv_biom, "RC_ASVs_BIOM.biom")
+
+rc_asv_tax <- taxa
+row.names(rc_asv_tax) <- sub(">", "", rc_asv_headers)
+write.table(rc_asv_tax, "RC_ASVs_taxonomy.tsv", sep="\t", quote=F, col.names=NA)
+
+```
+
