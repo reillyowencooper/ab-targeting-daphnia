@@ -1,0 +1,230 @@
+---
+title: "life_history_analysis"
+author: "Reilly Cooper"
+date: "1/4/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(here)
+library(cowplot)
+library(survminer)
+library(survival)
+library(wesanderson)
+library(rstatix)
+library(scales)
+
+theme_set(theme_bw(base_size = 10))
+
+ab_levels <- c("NONE", "AZT", "ERY", "SFX", "ALL")
+
+ab_colors <- c("NONE" = "#9A872D", 
+               "AZT" = "#F5CDB6", 
+               "ERY" = "#F7B0AA", 
+               "SFX" = "#FDDDA4", 
+               "ALL" = "#76A08A")
+```
+
+Data loading
+```{r data}
+# Reproduction, cumulative
+cum_repro_loc <- here("targeted_antibiotic_datasheets", "reprodsum.csv")
+# Reproduction, first brood
+first_brood_repro_loc <- here("targeted_antibiotic_datasheets", "repro_first_brood.csv")
+# Survival, formatted for statistics
+survival_stats_loc <- here("targeted_antibiotic_datasheets", "formatteddeath.csv")
+# Survival, formatted for visualization
+survival_viz_loc <- here("targeted_antibiotic_datasheets", "survival_death.csv")
+# Growth
+growth_loc <- here("targeted_antibiotic_datasheets", "bodysize.csv")
+
+cum_repro <- read.csv(cum_repro_loc)
+first_brood_repro <- read.csv(first_brood_repro_loc)
+survival_stats <- read.csv(survival_stats_loc)
+survival_viz <- read.csv(survival_viz_loc)
+growth <- read.csv(growth_loc)
+```
+
+First, examining cumulative reproduction. Because only one individual in the colder treatment (11C) had offspring, all input is subset to the 19C treatment.
+```{r cumulative reproduction, error=FALSE, warning=FALSE}
+# Subsetting to 19C
+cum_repro_subset <- cum_repro %>% filter(temp_trt == "19C")
+
+# Statistics
+repro_aov <- aov(repro_sum ~ ab_trt, data = cum_repro_subset)
+repro_tukey <- tukey_hsd(repro_aov)
+
+# Saving statistics
+write.csv(anova_summary(repro_aov), here("ab-targeting-daphnia", "statistics", "cumulative_reproduction_anova.csv"))
+write.csv(repro_tukey, here("ab-targeting-daphnia", "statistics", "cumulative_reproduction_tukeyhsd.csv"))
+
+# Reordering factor levels for clarity
+cum_repro_subset$ab_trt <- factor(cum_repro_subset$ab_trt, levels = ab_levels)
+
+# Creating figure using Tukey HSD results to annotate significance with letters
+cumulative_reproduction_plot <- ggplot(cum_repro_subset, aes(ab_trt, repro_sum)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.1, height = 0, size = 0.5, alpha = 0.5, aes(color = ab_trt)) +
+  xlab("Antibiotic Treatment") +
+  ylab("Cumulative Reproduction") +
+  scale_color_manual(values = ab_colors) +
+  stat_compare_means(comparisons = list(c("NONE", "AZT"), c("NONE", "ERY"), c("NONE", "SFX"), c("NONE", "ALL")), method = "t.test")
+  annotate("text", label = "a", x = 1.25, y = 70, size = 4, fontface = 2) +
+  annotate("text", label = "ab", x = 2.25, y = 70, size = 4, fontface = 2) +
+  annotate("text", label = "a", x = 3.25, y = 70, size = 4, fontface = 2) +
+  annotate("text", label = "b", x = 4.25, y = 70, size = 4, fontface = 2) +
+  annotate("text", label = "b", x = 5.25, y = 70, size = 4, fontface = 2) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        axis.title.x = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "none")
+
+# Saving figure
+ggsave(here("ab-targeting-daphnia", "figures", "cumulative_reproduction.pdf"), cumulative_reproduction_plot, units = "in", width = 4, height = 4, dpi = 300, useDingbats = FALSE)
+```
+
+Second, examining first brood timing. As with cumulative reproduction, subsetting to just 19C. This was already done in the input data.
+```{r first brood, error=FALSE, warning=FALSE}
+# Statistics
+firstbrood_aov <- aov(day ~ ab, data = first_brood_repro)
+firstbrood_tukey <- tukey_hsd(firstbrood_aov)
+
+# Saving statistics
+write.csv(anova_summary(firstbrood_aov), here("ab-targeting-daphnia", "statistics", "firstbrood_reproduction_anova.csv"))
+write.csv(firstbrood_tukey, here("ab-targeting-daphnia", "statistics", "firstbrood_reproduction_tukeyhsd.csv"))
+
+# Reordering factor levels
+first_brood_repro$ab <- factor(first_brood_repro$ab, levels = ab_levels)
+
+# Creating figure using Tukey HSD results to annotate significance with letters
+first_brood_plot <- ggplot(first_brood_repro, aes(ab, day)) + 
+  stat_summary(fun.data = "mean_cl_normal", color = "black") +
+  geom_jitter(width = 0.1, height = 0, size = 0.5, alpha = 1, aes(color = ab)) +
+  xlab("Antibiotic Treatment") +
+  ylab("Day of First Brood") +
+  scale_color_manual(values = ab_colors) +
+  annotate("text", label = "a", x = 1.25, y = 21, size = 4, fontface = 2) +
+  annotate("text", label = "ab", x = 2.25, y = 21, size = 4, fontface = 2) +
+  annotate("text", label = "ab", x = 3.25, y = 21, size = 4, fontface = 2) +
+  annotate("text", label = "b", x = 4.25, y = 21, size = 4, fontface = 2) +
+  annotate("text", label = "a", x = 5.25, y = 21, size = 4, fontface = 2) +
+  scale_y_continuous(breaks = pretty_breaks()) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        axis.title.x = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "none")
+
+# Saving figure
+ggsave(here("ab-targeting-daphnia", "figures", "day_of_first_brood.pdf"), first_brood_plot, units = "in", width = 4, height = 4, dpi = 300, useDingbats = FALSE)
+```
+
+Third, examining Daphnia growth. This includes both temperature treatments.
+```{r growth, error=FALSE, warning=FALSE}
+# Adding growth measurement, since all that was measured was initial size and end size
+growth <- growth %>% mutate(growth = size_end - size_begin)
+growth$temp_trt <- gsub("19C", "19°C", growth$temp_trt)
+growth$temp_trt <- gsub("11C", "11°C", growth$temp_trt)
+
+# Statisticis
+growth_aov <- aov(growth ~ ab_trt*temp_trt, data = growth)
+growth_tukey <- tukey_hsd(growth_aov)
+
+# Saving statistics 
+write.csv(anova_summary(growth_aov), here("ab-targeting-daphnia", "statistics", "growth_anova.csv"))
+write.csv(growth_tukey, here("ab-targeting-daphnia", "statistics", "growth_tukeyhsd.csv"))
+
+# Reordering antibiotic and temperature levels for visualization
+growth$ab_trt <- factor(growth$ab_trt, levels = ab_levels)
+growth$temp_trt <- factor(growth$temp_trt, levels = c("19°C", "11°C"))
+
+# Creating figure
+growth_plot <- ggplot(growth, aes(ab_trt, growth)) +
+  facet_wrap(~temp_trt, nrow = 1) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.1, height = 0, size = 0.5, alpha = 0.5, aes(color = ab_trt)) +
+  xlab("Antibiotic Treatment") +
+  ylab("Growth (mm)") +
+  scale_color_manual(values = ab_colors) +
+  theme(strip.background = element_rect(fill = "white"),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        axis.title.x = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "none")
+
+# Saving figure
+ggsave(here("ab-targeting-daphnia", "figures", "growth_by_treatment.pdf"), growth_plot, units = "in", width = 4, height = 4, dpi = 300, useDingbats = FALSE)
+```
+
+Fourth, survival. This also includes both temperature treatments.
+```{r survival, error=FALSE, warning=FALSE}
+# Reordering treatment levels to compare against control temperature and no antibiotic control as reference groups
+survival_stats$temp_trt = factor(survival_stats$temp_trt,levels = c("19C", "11C"))
+survival_stats$ab_trt <- factor(survival_stats$ab_trt, levels = ab_levels)
+
+# Renaming survival statistics dataframe columns to get nicer outputs
+colnames(survival_stats) <- c("Individual", "Antibiotic_Treatment", "Temperature_Treatment", "status", "time")
+
+# Comparing survival across all treatments
+survivalObject <- Surv(time = survival_stats$time, event = survival_stats$status)
+fit <- coxph(survivalObject ~ Antibiotic_Treatment + Temperature_Treatment, data = survival_stats)
+summary(fit)
+
+# Visualizing hazard ratios
+survival_hazard_ratios <- ggforest(fit, data = survival_stats, fontsize = .5)
+
+# Saving hazard ratio visualization
+ggsave(here("figures", "survival_hazard_ratios.pdf"), survival_hazard_ratios, units = "in", width = 8.5, height = 11, dpi = 300)
+
+# For visualization, first cleaning out empty rows and columns
+survival_viz <- survival_viz[0:210, 0:5]
+
+# Reordering antibiotic and temperature treatment levels
+survival_viz$ab_trt <- factor(survival_viz$ab_trt, levels = ab_levels)
+survival_viz$temp_trt <- factor(survival_viz$temp_trt, levels = c("19C", "11C"))
+
+# Creating figure
+survival_plot <- ggplot(survival_viz, aes(day, propalive, group = ab_trt, color = ab_trt)) +
+  facet_wrap(~temp_trt) + 
+  geom_line(size = .75) +
+  theme(strip.background = element_rect(fill = "white"),
+        panel.grid = element_blank()) +
+  xlab("Day") +
+  ylab("Proportion Alive") +
+  scale_color_manual(values = ab_colors) +
+  guides(color = guide_legend(title = "Antibiotic Treatment"))
+
+survival_plot_nolegend <- survival_plot + theme(legend.position = "none")
+
+survival_plot_bottom <- survival_plot + theme(legend.position = "bottom")
+survival_legend <- get_legend(survival_plot_bottom)
+# Saving figure
+ggsave(here("figures", "survival_curves.pdf"), survival_plot_nolegend, width = 4, height = 4, dpi = 300, useDingbats = FALSE)
+```
+
+Combining all four figures for Figure 4.
+```{r figure4, error=FALSE, warning=FALSE}
+part_one <- plot_grid(cumulative_reproduction_plot, survival_plot_nolegend, rel_widths = c(.85, 1), nrow = 1, labels = c("a", "b"))
+part_two <- plot_grid(first_brood_plot, growth_plot, rel_widths = c(.85, 1), nrow = 1, labels = c("c", "d"))
+
+figure_four <- plot_grid(part_one,
+                         part_two,
+                         survival_legend,
+                         nrow = 3,
+                         rel_heights = c(1,1,.1))
+part_one <- plot_grid(cumulative_reproduction_plot,
+                         survival_plot_nolegend,
+                         first_brood_plot,
+                         growth_plot,
+                         nrow = 2, 
+                      align = "hv",
+                      labels = "auto")
+
+figure_four <- plot_grid(part_one, survival_legend, nrow = 1, rel_widths = c(.9, .1))
+
+figure_four
+# Saving figure, adding labels and degree symbols in Illustrator and fixing some axis text for clarity
+ggsave(here("figures", "figure_four.pdf"), figure_four, units = "in", width = 8, height = 8, dpi = 300, useDingbats = FALSE)
+```
+

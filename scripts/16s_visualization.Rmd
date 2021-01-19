@@ -1,0 +1,765 @@
+---
+title: "16s_visualization"
+author: "Reilly Cooper"
+date: "1/4/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(speedyseq)
+library(tidyverse)
+library(cowplot)
+library(DESeq2)
+library(DivNet)
+library(rstatix)
+library(microbiome)
+library(vegan)
+library(here)
+
+theme_set(theme_cowplot(font_size = 14))
+
+ab_levels <- c("NONE", "AZT", "ERY", "SFX", "ALL")
+temp_levels <- c("19C", "11C")
+
+genus_colors <- c("Vitreoscilla" = "#DAECED",
+                  "Pedobacter" = "#CB9E23",
+                  "Limnohabitans" = "#957A6D",
+                  "Pseudomonas" = "#A35E60",
+                  "Fluviicola" = "#AC6E49",
+                  "Acidovorax" = "#456355",
+                  "Prosthecobacter" = "#541F12",
+                  "Emticicia" = "#1C366B",
+                  "Flavobacterium" = "#1DACE8",
+                  "SR1 genera incertae sedis" = "#D3DDDC",
+                  "Sphingopyxis" = "#76A08A",
+                  "Brevundimonas" = "#C7CEF6",
+                  "Curvibacter" = "#EDCB64",
+                  "Chryseobacterium" = "#CECD7B",
+                  "<=1% Abundant/Unidentified" = "#C4CFD0",
+                  "Family: Chitinophagaceae" = "#82753b",
+                  "Family: Comamonadaceae" = "#F7B0AA",
+                  "Family: Rhizobiaceae" = "#DEB18B")
+
+class_colors <- c("Sphingobacteriia" = "#76A08A",
+                   "Betaproteobacteria" = "#FDDDA4",
+                   "Gammaproteobacteria" = "#F7B0AA",
+                   "Alphaproteobacteria" = "#9A872D",
+                   "Flavobacteriia" = "#F5CDB6",
+                   "Cytophagia" = "#C7CEF6",
+                   "Verrucomicrobiae" = "#7496D2",
+                   "Absconditabacteria" = "#1C366B",
+                   "Deinococci" = "#CECD7B",
+                   "Actinobacteria" = "#DEB18B",
+                   "Bacilli" = "#456355",
+                   "Clostridia" = "#B5966D",
+                   "Planctomycetia" = "#F8DF4F",
+                  "<=1% Abundant/Unidentified" = "#C4CFD0",
+                  "<=1% Abundant" = "#C4CFD0",
+                  "Phylum: Bacteroidetes" = "#bfb58a")
+
+ab_colors <- c("NONE" = "#9A872D", 
+               "AZT" = "#F5CDB6", 
+               "ERY" = "#F7B0AA", 
+               "SFX" = "#FDDDA4", 
+               "ALL" = "#76A08A")
+```
+
+Loading data and cleaning
+```{r dataload}
+data_loc <- here("targeted_antibiotic_datasheets", "rcClean.rds")
+
+data <- readRDS(data_loc) %>%
+  subset_taxa(Phylum != "Cyanobacteria/Chloroplast") %>% # Removes any hits to algae
+  subset_samples(Sample != "E2T02S3") %>% # Removes sample with no reads
+  subset_samples(experiment == "two") # Subsets to only experiment with temperature
+
+# Replacing "18C" with "19C" in metadata - mistake when inputting metadata
+data@sam_data$temp_treatment <- str_replace_all(data@sam_data$temp_treatment,
+                                                "18C", "19C")
+```
+
+First, visualizing the most abundant taxa present in the adult Daphnia microbiome in no antibiotic, 19C conditions.
+```{r adults, warning=False, error=FALSE}
+adults <- subset_samples(data, temp_treatment == "19C" & antibiotic_treatment == "NONE")
+
+# Merge by samples, then glom by Genus and by Class
+adult_merged <- merge_samples2(adults, "experiment")
+
+adult_classglommed <- tax_glom(adult_merged, taxrank = "Class", NArm = FALSE)
+adult_genusglommed <- tax_glom(adult_merged, taxrank = "Genus", NArm = FALSE)
+
+# Transforming into relative abundance
+adult_classtranf <- transform_sample_counts(adult_classglommed, function(x) x/sum(x))
+adult_genustransf <- transform_sample_counts(adult_genusglommed, function(x) x/sum(x))
+
+# Melting into dataframe
+adult_classmelt <- psmelt(adult_classtranf)
+adult_genusmelt <- psmelt(adult_genustransf)
+
+# Replacing SR1 with Absconditabacteria candidate name in Class dataframe 
+adult_classmelt <- adult_classmelt %>% 
+  mutate(Class = ifelse(Class == "-", "Absconditabacteria", Class)) %>%
+  arrange(desc(Abundance)) %>%
+  mutate(Class = ifelse(is.na(Class), paste0("Phylum: ", Phylum), Class))
+
+# Creating Class-level stacked bar plot
+# In the figure, annotating bars with antibiotics that target those classes
+adult_class_plot <- ggplot(adult_classmelt, aes(Sample, Abundance, fill = Class)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = class_colors) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ylab("Relative abundance")
+
+adult_class_plot
+# Creating Genus-level stacked bar plot
+# Replacing all genera with <=1% abundance or unidentified at or below Family rank with "<=1% Abundant/Unidentified"
+adult_genusmelt <- adult_genusmelt %>%
+  mutate(Genus = ifelse(Abundance <= 0.01, "<=1% Abundant/Unidentified", Genus)) %>%
+  mutate(Genus = ifelse(is.na(Genus), paste0("Family: ", Family), Genus)) %>%
+  mutate(Genus = ifelse(is.na(Genus), "<=1% Abundant/Unidentified", Genus)) %>%
+  arrange(desc(Abundance))
+
+
+
+adult_genus_plot <- ggplot(adult_genusmelt, aes(Sample, Abundance, fill = Genus)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = genus_colors) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ylab("Relative abundance")
+
+adult_genus_plot
+# Saving figures
+ggsave(here("figures", "standard_adult_microbiome_genus.pdf"), adult_genus_plot, units = "in", height = 8, width = 8, dpi = 300, useDingbats = FALSE)
+ggsave(here("figures", "standard_adult_microbiome_class.pdf"), adult_class_plot, units = "in", height = 8, width = 8, dpi = 300, useDingbats = FALSE)
+```
+
+Estimating alpha diversity using DivNet.
+```{r alphadiv, warning=FALSE, error=FALSE}
+# Generating alpha diversity estimates with DivNet
+dv <- divnet(data, ncores = 4)
+
+# Adding sample metadata
+data_simpson <- dv$simpson %>% 
+  summary %>% 
+  select(sample_names, estimate) %>%
+  mutate(inverse_simpson = 1/estimate,
+         ab = data@sam_data$antibiotic_treatment,
+         temp = data@sam_data$temp_treatment)
+
+# Statistics
+adiv_aov <- aov(inverse_simpson ~ ab*temp, data = data_simpson)
+adiv_tukey <- tukey_hsd(adiv_aov)
+write.csv(anova_summary(adiv_aov), here("targeted_antibiotic_visualization_statistics_files", "alphadiv_aov.csv"))
+write.csv(adiv_tukey, here("targeted_antibiotic_visualization_statistics_files", "alphadiv_tukey.csv"))
+# Reordering factor levels
+data_simpson$ab <- factor(data_simpson$ab, levels = ab_levels)
+data_simpson$temp <- factor(data_simpson$temp, levels = temp_levels)
+
+# Creating plot with significance as compared to normal - there is no effect of temperature, so all together
+alpha_diversity_plot <- ggplot(data_simpson, aes(ab, inverse_simpson)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.05, height = 0, size = 0.5, alpha = 0.5, aes(color = ab)) +
+  xlab("Antibiotic Treatment") +
+  ylab("Inverse Simpson Index") +
+  scale_color_manual(values = ab_colors) +
+  theme(strip.background = element_rect(fill = "white"),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        axis.title.x = element_blank()) +
+  annotate("text", label = "ns", x = 2, y = 15) +
+  annotate("text", label = "ns", x = 3, y = 15) +
+  annotate("text", label = "*", x = 4, y = 15) +
+  annotate("text", label = "*", x = 5, y = 15) +
+  annotate("text", label = "Anova, p = 0.0283", x = 5, y = 3)
+
+ggsave(here("figures", "alpha_diversity.pdf"), alpha_diversity_plot, units = "in", height = 4, width = 4, dpi = 300, useDingbats = FALSE)
+```
+
+Examining differences in microbiome composition among antibiotic treatments in control temperatures.
+```{r antibiotics only, warning=FALSE, error=FALSE}
+# Transforming all data
+data_transformed <- transform_sample_counts(data, function(x) x/sum(x))
+
+# Subsetting data in pairs against NONE for PERMANOVAs
+none_vs_azt <- subset_samples(data_transformed, antibiotic_treatment %in% c("NONE", "AZT"))
+none_vs_ery <- subset_samples(data_transformed, antibiotic_treatment %in% c("NONE", "ERY"))
+none_vs_sfx <- subset_samples(data_transformed, antibiotic_treatment %in% c("NONE", "SFX"))
+none_vs_all <- subset_samples(data_transformed, antibiotic_treatment %in% c("NONE", "ALL"))
+
+# PERMANOVAs
+none_vs_azt_perm <- adonis(t(abundances(none_vs_azt)) ~ antibiotic_treatment, 
+                           data = meta(none_vs_azt),
+                           permutation = 999,
+                           method = "bray")
+none_vs_ery_perm <- adonis(t(abundances(none_vs_ery)) ~ antibiotic_treatment, 
+                           data = meta(none_vs_ery),
+                           permutation = 999,
+                           method = "bray")
+none_vs_sfx_perm <- adonis(t(abundances(none_vs_sfx)) ~ antibiotic_treatment, 
+                           data = meta(none_vs_sfx),
+                           permutation = 999,
+                           method = "bray")
+none_vs_all_perm <- adonis(t(abundances(none_vs_all)) ~ antibiotic_treatment, 
+                           data = meta(none_vs_all),
+                           permutation = 999,
+                           method = "bray")
+
+# Pulling out statistics
+none_vs_azt_results <- none_vs_azt_perm$aov.tab
+none_vs_ery_results <- none_vs_ery_perm$aov.tab
+none_vs_sfx_results <- none_vs_sfx_perm$aov.tab
+none_vs_all_results <- none_vs_all_perm$aov.tab
+
+# Visualizing microbiome across antibiotic treatments in control temperature
+# Subsetting and merging samples
+antibiotics <- subset_samples(data, temp_treatment == "19C")
+antibiotics_merged <- merge_samples2(antibiotics, "antibiotic_treatment")
+
+# Transforming to relative abundance
+antibiotics_transformed <- transform_sample_counts(antibiotics_merged, function(x) x/sum(x))
+
+# Melting
+antibiotics_melted <- psmelt(antibiotics_transformed)
+
+# Converting low abundance classes to "<= 1% Abundant/Unidentified
+antibiotic_class_summary <- antibiotics_melted %>% 
+  group_by(Class) %>% 
+  summarise(class_abundance = sum(Abundance)) %>%
+  mutate(new_class = ifelse(class_abundance < 0.01, "<=1% Abundant/Unidentified", Class))
+antibiotics_melted <- merge(antibiotics_melted, antibiotic_class_summary, by = "Class", all.x = TRUE) %>%
+  mutate(new_class = ifelse(is.na(new_class), "<=1% Abundant/Unidentified", new_class)) %>%
+  mutate(new_class = ifelse(new_class == "-", "Absconditabacteria", new_class))
+
+# Reordering factor levels
+antibiotics_melted$antibiotic_treatment <- factor(antibiotics_melted$antibiotic_treatment, levels = ab_levels)
+# Visualizing
+antibiotics_composition_19c_plot <- ggplot(antibiotics_melted, aes(antibiotic_treatment, Abundance, fill = new_class)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = class_colors) +
+  xlab("Antibiotic Treatment") +
+  ylab("Relative abundance") +
+  theme(axis.title.x = element_blank()) +  
+  guides(fill = guide_legend("Class"))
+
+ggsave(here("figures", "antibiotics_composition_19c_plot.pdf"), antibiotics_composition_19c_plot, units = "in", height = 8, width = 8, dpi = 300, useDingbats = FALSE)
+
+# Repeating the above but for cold temperature visualization
+antibiotics_cold <- subset_samples(data, temp_treatment == "11C")
+antibiotics_cold_merged <- merge_samples2(antibiotics_cold, "antibiotic_treatment")
+
+# Transforming to relative abundance
+antibiotics_cold_transformed <- transform_sample_counts(antibiotics_cold_merged, function(x) x/sum(x))
+
+# Melting
+antibiotics_cold_melted <- psmelt(antibiotics_cold_transformed)
+
+# Converting low abundance classes to "<= 1% Abundant/Unidentified
+antibiotic_cold_class_summary <- antibiotics_cold_melted %>% 
+  group_by(Class) %>% 
+  summarise(class_abundance = sum(Abundance)) %>%
+  mutate(new_class = ifelse(class_abundance < 0.01, "<=1% Abundant/Unidentified", Class))
+antibiotics_cold_melted <- merge(antibiotics_cold_melted, antibiotic_cold_class_summary, by = "Class", all.x = TRUE) %>%
+  mutate(new_class = ifelse(is.na(new_class), "<=1% Abundant/Unidentified", new_class)) %>%
+  mutate(new_class = ifelse(new_class == "-", "Absconditabacteria", new_class))
+
+# Reordering factor levels
+antibiotics_cold_melted$antibiotic_treatment <- factor(antibiotics_cold_melted$antibiotic_treatment, levels = ab_levels)
+# Visualizing
+antibiotics_composition_11c_plot <- ggplot(antibiotics_cold_melted, aes(antibiotic_treatment, Abundance, fill = new_class)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = class_colors) +
+  xlab("Antibiotic Treatment") +
+  ylab("Relative abundance") +
+  theme(axis.title.x = element_blank()) +
+  guides(fill = guide_legend("Class"))
+
+ggsave(here("figures", "antibiotics_composition_11c_plot.pdf"), antibiotics_composition_11c_plot, units = "in", height = 8, width = 8, dpi = 300, useDingbats = FALSE)
+```
+
+Creating Figure 2.
+```{r figure two, warning=FALSE, error=FALSE}
+antibiotics_composition_11c_plot_bottom_legend <- antibiotics_composition_11c_plot + theme(legend.position = "bottom")
+
+antibiotics_legend <- get_legend(antibiotics_composition_11c_plot_bottom_legend)
+
+ab_19_plot_mod <- antibiotics_composition_19c_plot + 
+  labs(title = "19°C") + 
+  theme(legend.position = "none")
+
+ab_11_plot_mod <- antibiotics_composition_11c_plot + 
+  labs(title = "11°C") +
+  theme(legend.position = "none")
+
+figure_two <- plot_grid(plot_grid(ab_19_plot_mod,
+                                  ab_11_plot_mod,
+                                  nrow = 1,
+                                  labels = c("a", "b")),
+                        plot_grid(NULL, 
+                                  antibiotics_legend, 
+                                  NULL,
+                                  nrow = 1,
+                                  rel_widths = c(.15, .5, .15)),
+                        nrow = 2,
+                        rel_heights = c(1, .25))
+
+figure_two
+# Saving figure - will add degree symbol in Illustrator and fix legend to fit
+ggsave(here("figures", "figure_two.pdf"), figure_two, units = "in", width = 8, height = 6, dpi = 300, useDingbats = FALSE)
+```
+
+Examining differences in composition across temperatures for each antibiotic treatment.
+```{r composition temperature, warning=FALSE, error=FALSE}
+none_cold <- subset_samples(data_transformed, antibiotic_treatment == "NONE")
+azt_cold <- subset_samples(data_transformed, antibiotic_treatment == "AZT")
+ery_cold <- subset_samples(data_transformed, antibiotic_treatment == "ERY")
+sfx_cold <- subset_samples(data_transformed, antibiotic_treatment == "SFX")
+all_cold <- subset_samples(data_transformed, antibiotic_treatment == "ALL")
+
+# PERMANOVAs
+none_cold_perm <- adonis(t(abundances(none_cold)) ~ antibiotic_treatment, 
+                           data = meta(none_cold),
+                           permutation = 999,
+                           method = "bray")
+azt_cold_perm <- adonis(t(abundances(azt_cold)) ~ antibiotic_treatment, 
+                           data = meta(azt_cold),
+                           permutation = 999,
+                           method = "bray")
+ery_cold_perm <- adonis(t(abundances(ery_cold)) ~ antibiotic_treatment, 
+                           data = meta(ery_cold),
+                           permutation = 999,
+                           method = "bray")
+sfx_cold_perm <- adonis(t(abundances(sfx_cold)) ~ antibiotic_treatment, 
+                           data = meta(sfx_cold),
+                           permutation = 999,
+                           method = "bray")
+all_cold_perm <- adonis(t(abundances(all_cold)) ~ antibiotic_treatment, 
+                           data = meta(all_cold),
+                           permutation = 999,
+                           method = "bray")
+
+# Pulling out statistics
+none_cold_results <- none_cold_perm$aov.tab
+azt_cold_results <- azt_cold_perm$aov.tab
+ery_cold_results <- ery_cold_perm$aov.tab
+sfx_cold_results <- sfx_cold_perm$aov.tab
+all_cold_results <- all_cold_perm$aov.tab
+```
+
+Prepping data for DESeq2.
+```{r deseq prep, warning=FALSE, error=FALSE}
+# Converting to DESeq object for just antibiotics in 19C
+# First renaming ASVs to keep track of through pipeline
+sequences <- Biostrings::DNAStringSet(taxa_names(data))
+names(sequences) <- taxa_names(data)
+data_named <- merge_phyloseq(data, sequences)
+taxa_names(data_named) <- paste0("ASV", seq(ntaxa(data_named)))
+
+deseq_ab <- phyloseq_to_deseq2(subset_samples(data_named, temp_treatment == "19C"), ~ antibiotic_treatment)
+
+# Converting each antibiotic treatment across temperatures to DESeq object
+deseq_none <- phyloseq_to_deseq2(subset_samples(data_named, antibiotic_treatment == "NONE"), ~ temp_treatment)
+deseq_azt <- phyloseq_to_deseq2(subset_samples(data_named, antibiotic_treatment == "AZT"), ~ temp_treatment)
+deseq_ery <- phyloseq_to_deseq2(subset_samples(data_named, antibiotic_treatment == "ERY"), ~ temp_treatment)
+deseq_sfx <- phyloseq_to_deseq2(subset_samples(data_named, antibiotic_treatment == "SFX"), ~ temp_treatment)
+deseq_all <- phyloseq_to_deseq2(subset_samples(data_named, antibiotic_treatment == "ALL"), ~ temp_treatment)
+
+# Function to calculate geometric means prior to estimate size factors
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+
+# Function to retrieve results from DESeq output
+get_deseq_results <- function(deseq_results_obj, alpha, ps_obj) {
+  significant_res <- deseq_results_obj[which(deseq_results_obj$padj < alpha),]
+  deseq_diff <- cbind(as(significant_res, "data.frame"),
+                      as(tax_table(ps_obj)[rownames(significant_res),], "matrix"))
+  return(deseq_diff)
+}
+
+# Transforming counts to DESeq-readable distribution and estimating size factors
+deseq_ab_sf <- estimateSizeFactors(deseq_ab, geoMeans = apply(counts(deseq_ab), 1, gm_mean))
+deseq_none_sf <- estimateSizeFactors(deseq_none, geoMeans = apply(counts(deseq_none), 1, gm_mean))
+deseq_azt_sf <- estimateSizeFactors(deseq_azt, geoMeans = apply(counts(deseq_azt), 1, gm_mean))
+deseq_ery_sf <- estimateSizeFactors(deseq_ery, geoMeans = apply(counts(deseq_ery), 1, gm_mean))
+deseq_sfx_sf <- estimateSizeFactors(deseq_sfx, geoMeans = apply(counts(deseq_sfx), 1, gm_mean))
+deseq_all_sf <- estimateSizeFactors(deseq_all, geoMeans = apply(counts(deseq_all), 1, gm_mean))
+
+# Calculating differential abundances
+deseq_ab <- DESeq(deseq_ab_sf, fitType = "local")
+deseq_none <- DESeq(deseq_none_sf, fitType = "local")
+deseq_azt <- DESeq(deseq_azt_sf, fitType = "local")
+deseq_ery <- DESeq(deseq_ery_sf, fitType = "local")
+deseq_sfx <- DESeq(deseq_sfx_sf, fitType = "local")
+deseq_all <- DESeq(deseq_all_sf, fitType = "local")
+```
+
+With data in order, now it's time to look at differentially abundant taxa. First, looking at taxa across antibiotic treatments in control conditions.
+```{r deseq antibiotics, warning=FALSE, error=FALSE}
+# Cutoff value for certainty
+alpha <- 0.05
+# Getting results for each antibiotic as compared to the no antibiotic control
+azt_vs_none <- results(deseq_ab, contrast = c("antibiotic_treatment", "AZT", "NONE"))
+ery_vs_none <- results(deseq_ab, contrast = c("antibiotic_treatment", "ERY", "NONE"))
+sfx_vs_none <- results(deseq_ab, contrast = c("antibiotic_treatment", "SFX", "NONE"))
+all_vs_none <- results(deseq_ab, contrast = c("antibiotic_treatment", "ALL", "NONE"))
+
+
+# Getting results that are significant (lower than cutoff) and binding with correct taxa
+azt_diff <- get_deseq_results(azt_vs_none, alpha = alpha, data_named)
+
+ery_diff <- get_deseq_results(ery_vs_none, alpha = alpha, data_named)
+
+sfx_diff <- get_deseq_results(sfx_vs_none, alpha = alpha, data_named)
+
+all_diff <- get_deseq_results(all_vs_none, alpha = alpha, data_named)
+
+# Visualizing results
+# Starting with AZT vs. NONE. For ASVs with the same genus, adding "ASV #" to the end
+azt_diff <- azt_diff %>%
+  rownames_to_column(var = "asv") %>%
+  mutate(polished_genus = ifelse(is.na(Genus), paste0(Family, " (", asv, ")"), paste0(Genus, " (", asv, ")"))) %>%
+  arrange(desc(log2FoldChange)) %>%
+  mutate(Class = ifelse(Class == "-", "Absconditabacteria", Class))
+
+
+# Reordering factor levels
+azt_diff$polished_genus <- factor(azt_diff$polished_genus, levels = as.list(azt_diff$polished_genus))
+# Making figure
+azt_plot <- ggplot(azt_diff, aes(polished_genus, log2FoldChange, fill = Class)) +
+  geom_bar(stat = "identity") +
+  labs(title = "AZT",
+       y=expression(Log[2]*" Fold Change")) +
+  coord_flip() +
+  scale_fill_manual(values = class_colors) +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none",
+        plot.title.position = "plot",
+        axis.title.y = element_blank())
+
+# ERY vs. NONE
+ery_diff <- ery_diff %>%
+  rownames_to_column(var = "asv") %>%
+  mutate(polished_genus = ifelse(is.na(Genus), paste0(Family, " (", asv, ")"), paste0(Genus, " (", asv, ")"))) %>%
+  arrange(desc(log2FoldChange)) %>%
+  mutate(Class = ifelse(Class == "-", "Absconditabacteria", Class))
+
+# Reordering factor levels
+ery_diff$polished_genus <- factor(ery_diff$polished_genus, levels = as.list(ery_diff$polished_genus))
+# Making figure
+ery_plot <- ggplot(ery_diff, aes(polished_genus, log2FoldChange, fill = Class)) +
+  geom_bar(stat = "identity") +
+  labs(title = "ERY",
+       y=expression(Log[2]*" Fold Change")) +
+  coord_flip() +
+  scale_fill_manual(values = class_colors) +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none",
+        plot.title.position = "plot",
+        axis.title.y = element_blank())
+
+# SFX vs. NONE
+sfx_diff <- sfx_diff %>%
+  rownames_to_column(var = "asv") %>%
+  mutate(polished_genus = ifelse(is.na(Genus), paste0(Family, " (", asv, ")"), paste0(Genus, " (", asv, ")"))) %>%
+  arrange(desc(log2FoldChange)) %>%
+  mutate(Class = ifelse(Class == "-", "Absconditabacteria", Class))
+
+sfx_diff$polished_genus <- factor(sfx_diff$polished_genus, levels = as.list(sfx_diff$polished_genus))
+
+# No copied genera, so making the figure
+sfx_plot <- ggplot(sfx_diff, aes(polished_genus, log2FoldChange, fill = Class)) +
+  geom_bar(stat = "identity") +
+  labs(title = "SFX",
+       y=expression(Log[2]*" Fold Change")) +
+  coord_flip() +
+  scale_fill_manual(values = class_colors) +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none",
+        plot.title.position = "plot",
+        axis.title.y = element_blank())
+
+# ALL vs. NONE
+all_diff <- all_diff %>%
+  rownames_to_column(var = "asv") %>%
+  mutate(polished_genus = ifelse(is.na(Genus), paste0(Family, " (", asv, ")"), paste0(Genus, " (", asv, ")"))) %>%
+  arrange(desc(log2FoldChange)) %>%
+  mutate(Class = ifelse(Class == "-", "Absconditabacteria", Class))
+
+all_diff$polished_genus <- factor(all_diff$polished_genus, levels = as.list(all_diff$polished_genus))
+
+# Making figure
+all_plot <- ggplot(all_diff, aes(polished_genus, log2FoldChange, fill = Class)) +
+  geom_bar(stat = "identity") +
+  labs(title = "ALL",
+       y=expression(Log[2]*" Fold Change")) +
+  coord_flip() +
+  scale_fill_manual(values = class_colors) +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none",
+        plot.title.position = "plot",
+        axis.title.y = element_blank())
+```
+
+Creating Figure 3.
+```{r figure three, warning=FALSE, error=FALSE}
+# Creating legend
+for_fig3_legend <- ggplot(all_diff, aes(polished_genus, log2FoldChange, fill = Class)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = class_colors) +
+  theme(legend.position = "bottom")
+
+fig3_legend <- get_legend(for_fig3_legend)
+
+# Crafting figure
+figure_three <- plot_grid(plot_grid(azt_plot,
+                                    ery_plot, 
+                                    sfx_plot, 
+                                    all_plot, 
+                                    ncol = 2, nrow = 2),
+                          plot_grid(NULL, fig3_legend, NULL,
+                                    rel_widths = c(.1, 1, .1)),
+                          nrow = 2,
+                          rel_heights = c(1, .25))
+
+# Saving figure
+ggsave(here("figures", "figure_three.pdf"), figure_three, units = "in", height = 10, width = 10, dpi = 300, useDingbats = FALSE)
+
+```
+
+Now examining differences across temperatures for each antibiotic.
+```{r deseq temperature, warning=FALSE, error=FALSE}
+none_cold_deseq <- results(deseq_none, contrast = c("temp_treatment", "11C", "19C"))
+azt_cold_deseq <- results(deseq_azt, contrast = c("temp_treatment", "11C", "19C"))
+ery_cold_deseq <- results(deseq_ery, contrast = c("temp_treatment", "11C", "19C"))
+sfx_cold_deseq<- results(deseq_sfx, contrast = c("temp_treatment", "11C", "19C"))
+all_cold_deseq <- results(deseq_all, contrast = c("temp_treatment", "11C", "19C"))
+
+# Getting results that are significant (lower than cutoff) and binding with correct taxa
+none_cold_diff <- get_deseq_results(none_cold_deseq, alpha = alpha, data_named)
+
+azt_cold_diff <- get_deseq_results(azt_cold_deseq, alpha = alpha, data_named)
+
+ery_cold_diff <- get_deseq_results(ery_cold_deseq, alpha = alpha, data_named)
+
+sfx_cold_diff <- get_deseq_results(sfx_cold_deseq, alpha = alpha, data_named)
+
+all_cold_diff <- get_deseq_results(all_cold_deseq, alpha = alpha, data_named)
+
+# Visualizing differences
+# Starting with NONE
+# Cleaning up output, adding ASV names
+none_cold_diff <- none_cold_diff %>%
+  rownames_to_column(var = "asv") %>%
+  mutate(polished_genus = ifelse(is.na(Genus), paste0(Family, " (", asv, ")"), paste0(Genus, " (", asv, ")"))) %>%
+  arrange(desc(log2FoldChange)) %>%
+  mutate(Class = ifelse(Class == "-", "Absconditabacteria", Class))
+
+# Reordering factor levels
+none_cold_diff$polished_genus <- factor(none_cold_diff$polished_genus, levels = as.list(none_cold_diff$polished_genus))
+# Making figure
+none_cold_plot <- ggplot(none_cold_diff, aes(polished_genus, log2FoldChange, fill = Class)) +
+  geom_bar(stat = "identity") +
+  labs(title = "NONE",
+       y=expression(Log[2]*" Fold Change")) +
+  coord_flip() +
+  scale_fill_manual(values = class_colors) +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none",
+        plot.title.position = "plot",
+        axis.title.y = element_blank())
+
+# AZT
+azt_cold_diff <- azt_cold_diff %>%
+  rownames_to_column(var = "asv") %>%
+  mutate(polished_genus = ifelse(is.na(Genus), paste0(Family, " (", asv, ")"), paste0(Genus, " (", asv, ")"))) %>%
+  arrange(desc(log2FoldChange)) %>%
+  mutate(Class = ifelse(Class == "-", "Absconditabacteria", Class))
+
+# Reordering factor levels
+azt_cold_diff$polished_genus <- factor(azt_cold_diff$polished_genus, levels = as.list(azt_cold_diff$polished_genus))
+# Making figure
+azt_cold_plot <- ggplot(azt_cold_diff, aes(polished_genus, log2FoldChange, fill = Class)) +
+  geom_bar(stat = "identity") +
+  labs(title = "AZT",
+       y=expression(Log[2]*" Fold Change")) +
+  coord_flip() +
+  scale_fill_manual(values = class_colors) +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none",
+        plot.title.position = "plot",
+        axis.title.y = element_blank())
+
+# ERY
+ery_cold_diff <- ery_cold_diff %>%
+  rownames_to_column(var = "asv") %>%
+  mutate(polished_genus = ifelse(is.na(Genus), paste0(Family, " (", asv, ")"), paste0(Genus, " (", asv, ")"))) %>%
+  arrange(desc(log2FoldChange)) %>%
+  mutate(Class = ifelse(Class == "-", "Absconditabacteria", Class))
+
+# Reordering factor levels
+ery_cold_diff$polished_genus <- factor(ery_cold_diff$polished_genus, levels = as.list(ery_cold_diff$polished_genus))
+# Making figure
+ery_cold_plot <- ggplot(ery_cold_diff, aes(polished_genus, log2FoldChange, fill = Class)) +
+  geom_bar(stat = "identity") +
+  labs(title = "ERY",
+       y=expression(Log[2]*" Fold Change")) +
+  coord_flip() +
+  scale_fill_manual(values = class_colors) +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none",
+        plot.title.position = "plot",
+        axis.title.y = element_blank())
+
+# SFX
+sfx_cold_diff <- sfx_cold_diff %>%
+  rownames_to_column(var = "asv") %>%
+  mutate(polished_genus = ifelse(is.na(Genus), paste0(Family, " (", asv, ")"), paste0(Genus, " (", asv, ")"))) %>%
+  arrange(desc(log2FoldChange)) %>%
+  mutate(Class = ifelse(Class == "-", "Absconditabacteria", Class))
+
+
+# Reordering factor levels
+sfx_cold_diff$polished_genus <- factor(sfx_cold_diff$polished_genus, levels = as.list(sfx_cold_diff$polished_genus))
+# Making figure
+sfx_cold_plot <- ggplot(sfx_cold_diff, aes(polished_genus, log2FoldChange, fill = Class)) +
+  geom_bar(stat = "identity") +
+  labs(title = "SFX",
+       y=expression(Log[2]*" Fold Change")) +
+  coord_flip() +
+  scale_fill_manual(values = class_colors) +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none",
+        plot.title.position = "plot",
+        axis.title.y = element_blank())
+
+# ALL
+all_cold_diff <- all_cold_diff %>%
+  rownames_to_column(var = "asv") %>%
+  mutate(polished_genus = ifelse(is.na(Genus), paste0(Family, " (", asv, ")"), paste0(Genus, " (", asv, ")"))) %>%
+  arrange(desc(log2FoldChange)) %>%
+  mutate(Class = ifelse(Class == "-", "Absconditabacteria", Class))
+
+# Reordering factor levels
+all_cold_diff$polished_genus <- factor(all_cold_diff$polished_genus, levels = as.list(all_cold_diff$polished_genus))
+# Making figure
+all_cold_plot <- ggplot(all_cold_diff, aes(polished_genus, log2FoldChange, fill = Class)) +
+  geom_bar(stat = "identity") +
+  labs(title = "ALL",
+       y=expression(Log[2]*" Fold Change")) +
+  coord_flip() +
+  scale_fill_manual(values = class_colors) +
+  theme(axis.ticks.y = element_blank(),
+        legend.position = "none",
+        plot.title.position = "plot",
+        axis.title.y = element_blank())
+```
+
+Stiching together to create supplemental figure 1.
+```{r supplemental figure 1, warning=FALSE, error=FALSE}
+none_all_together <- plot_grid(none_cold_plot,
+                               all_cold_plot,
+                               nrow = 2,
+                               align = "hv")
+
+supp_fig_one <- plot_grid(none_all_together, azt_cold_plot,
+                          ery_cold_plot, sfx_cold_plot,
+                          nrow = 2, ncol = 2,
+                          align = "h")
+
+
+# Saving figure
+ggsave(here("figures", "supplemental_figure_one.pdf"), supp_fig_one, units = "in", height = 10, width = 10, dpi = 300, useDingbats = FALSE)
+```
+
+Finally, adding in qPCR data to make Figure 1 complete.
+```{r qpcr, warning=FALSE, error=FALSE}
+qpcr <- read.csv(here("targeted_antibiotic_datasheets", "qpcr_ct_data.csv"))
+
+# Remove negative controls
+qpcr <- qpcr %>% filter(treatment != "NEG")
+
+qpcr_technical_reps_avg <- qpcr %>% 
+  group_by(treatment, gene, sample) %>% 
+  summarise(average = mean(cq))
+
+control <- qpcr_technical_reps_avg %>% filter(treatment == "CTRL")
+control_means <- control %>% group_by(gene) %>% summarise(mean = mean(average))
+control_dct <- control_means$mean[1] - control_means$mean[2]
+
+actin <- qpcr_technical_reps_avg %>% filter(gene == "actin") %>%
+  `colnames<-` (c("treatment", "gene", "sample", "actin_ct")) %>%
+  ungroup() %>%
+  select(treatment, sample, actin_ct)
+bac <- qpcr_technical_reps_avg %>% filter(gene == "16s") %>%
+  `colnames<-` (c("treatment", "gene", "sample", "bac_ct")) %>%
+  ungroup() %>%
+  select(treatment, sample, bac_ct)
+
+dct_df <- merge(actin, bac, by=c("treatment", "sample")) %>%
+  mutate(dct = bac_ct - actin_ct) %>%
+  mutate(ddct = dct - control_dct) %>%
+  mutate(fold_change = 2^(-ddct)) %>%
+  filter(treatment != "NEG")
+
+dct_df$treatment <- factor(dct_df$treatment, 
+                                     levels = c("CTRL", 
+                                                "AZT", 
+                                                "ERY", 
+                                                "SFX", 
+                                                "ALL"))
+
+dct_df <- dct_df[-27,] # Removing outlier
+dct_aov <- aov(ddct ~ treatment, data = dct_df)
+summary(dct_aov)
+result_text = "Anova, p = 0.0024"
+dct_tukey <- tukey_hsd(dct_aov)
+write_csv(dct_tukey, here("targeted_antibiotic_visualization_statistics_files", "qpcr_tukey.csv"))
+no_ctrl <- dct_df %>% filter(treatment != "CTRL")
+
+dct_df %>% na.omit() %>% group_by(treatment) %>% summarise(mean = mean(fold_change))
+
+qpcr_results <- ggplot(no_ctrl, aes(treatment, fold_change)) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.05, height = 0, alpha = 0.5, aes(color = treatment)) +
+  xlab("") +
+  ylab("Fold Change") +
+  scale_color_manual(values = ab_colors) +
+  annotate("text", x = 4, y = 1.25, label = result_text) +
+  annotate("text", label = "ns", x = 1, y = 3) +
+  annotate("text", label = "ns", x = 2, y = 3) +
+  annotate("text", label = "ns", x = 3, y = 3) +
+  annotate("text", label = "**", x = 4, y = 3) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        legend.position = "none")
+
+ggsave(here("figures", "qpcr_results.pdf"), qpcr_results, dpi = 300, units = "in", width = 4, height = 4, useDingbats = FALSE)
+```
+
+Making Figure 1.
+```{r figure one, warning=FALSE, error=FALSE}
+class_mod <- adult_class_plot + theme(legend.position = "bottom",
+                                      legend.title = element_text(size = 10),
+                                      legend.text = element_text(size = 8)) + 
+  guides(fill = guide_legend(nrow = 8))
+
+genus_mod <- adult_genus_plot + theme(legend.position = "bottom",
+                                      legend.title = element_text(size = 10),
+                                      legend.text = element_text(size = 8)) + 
+  guides(fill = guide_legend(nrow = 8))
+
+alpha_mod <- alpha_diversity_plot + theme(legend.position = "none")
+
+microbiome_part <- plot_grid(class_mod, genus_mod, nrow = 1, labels = c("a", "b"), align = "hv")
+
+div_and_qpcr <- plot_grid(alpha_mod, qpcr_results, nrow = 2, labels = c("c", "d"), align = "hv")
+
+figure_one <- plot_grid(microbiome_part, div_and_qpcr, nrow = 1, rel_widths = c(1, .75))
+
+figure_one
+ggsave(here("figures", "figure_one.pdf"), figure_one, dpi = 300, units = "in", width = 12, height = 12, useDingbats = FALSE)
+```
